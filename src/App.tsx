@@ -16,6 +16,7 @@ import Profile from "./pages/Profile";
 import Orders from "./pages/Orders";
 import TableBooking from "./pages/TableBooking";
 import Payment from "./pages/Payment";
+import PaymentSuccess from "./pages/PaymentSuccess";
 import MyBookings from "./pages/MyBookings";
 import NotFound from "./pages/NotFound";
 
@@ -40,6 +41,7 @@ const App = () => (
               <Route path="/orders" element={<Orders />} />
               <Route path="/table-booking" element={<TableBooking />} />
               <Route path="/payment" element={<Payment />} />
+              <Route path="/payment-success" element={<PaymentSuccess />} />
               <Route path="/my-bookings" element={<MyBookings />} />
               {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
               <Route path="*" element={<NotFound />} />

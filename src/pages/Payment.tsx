@@ -4,11 +4,8 @@ import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Separator } from '@/components/ui/separator';
-import { CreditCard, Wallet, Building2, Check } from 'lucide-react';
+import { CreditCard, Check } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   Dialog,
@@ -18,20 +15,24 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 
+// Declare Razorpay types
+declare global {
+  interface Window {
+    Razorpay: any;
+  }
+}
+
 const Payment = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const bookingData = location.state?.bookingData;
 
-  const [paymentMethod, setPaymentMethod] = useState('card');
-  const [cardNumber, setCardNumber] = useState('');
-  const [cardName, setCardName] = useState('');
-  const [expiryDate, setExpiryDate] = useState('');
-  const [cvv, setCvv] = useState('');
-  const [upiId, setUpiId] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [showSuccessDialog, setShowSuccessDialog] = useState(false);
   const [bookingId, setBookingId] = useState('');
+  const [razorpayLoaded, setRazorpayLoaded] = useState(false);
+
+  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
   useEffect(() => {
     if (!bookingData) {
@@ -40,50 +41,148 @@ const Payment = () => {
     }
   }, [bookingData, navigate]);
 
+  // Load Razorpay script
+  useEffect(() => {
+    const script = document.createElement('script');
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    script.async = true;
+    script.onload = () => {
+      setRazorpayLoaded(true);
+    };
+    document.body.appendChild(script);
+
+    return () => {
+      document.body.removeChild(script);
+    };
+  }, []);
+
   const generateBookingId = () => {
     return 'BK' + Date.now().toString().slice(-8);
   };
 
-  const handlePayment = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsProcessing(true);
-
-    // Validate payment details
-    if (paymentMethod === 'card') {
-      if (!cardNumber || !cardName || !expiryDate || !cvv) {
-        toast.error('Please fill in all card details');
-        setIsProcessing(false);
-        return;
-      }
-      if (cardNumber.length !== 19) {
-        toast.error('Invalid card number');
-        setIsProcessing(false);
-        return;
-      }
-    } else if (paymentMethod === 'upi' && !upiId) {
-      toast.error('Please enter UPI ID');
-      setIsProcessing(false);
+  const handlePayment = async () => {
+    if (!razorpayLoaded) {
+      toast.error('Payment gateway is loading. Please wait...');
       return;
     }
 
-    // Simulate payment processing
-    setTimeout(() => {
-      const newBookingId = generateBookingId();
-      setBookingId(newBookingId);
-      setIsProcessing(false);
-      setShowSuccessDialog(true);
-      
-      // Save booking to localStorage (simulating database)
-      const existingBookings = JSON.parse(localStorage.getItem('bookings') || '[]');
-      const newBooking = {
-        ...bookingData,
-        id: newBookingId,
-        paymentMethod,
-        status: 'confirmed',
-        createdAt: new Date().toISOString(),
+    setIsProcessing(true);
+
+    try {
+      const isDineIn = bookingData.type === 'dine-in';
+      const total = isDineIn ? 100 : bookingData.total;
+
+      // Create order on backend
+      const response = await fetch(`${API_URL}/api/create-order`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          amount: total,
+          currency: 'INR',
+          receipt: `receipt_${Date.now()}`,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to create order');
+      }
+
+      const orderData = await response.json();
+
+      // Razorpay options
+      const razorpayKeyId = import.meta.env.VITE_RAZORPAY_KEY_ID;
+      if (!razorpayKeyId) {
+        toast.error('Razorpay key not configured. Please contact support.');
+        setIsProcessing(false);
+        return;
+      }
+
+      const options = {
+        key: razorpayKeyId,
+        amount: orderData.amount,
+        currency: orderData.currency,
+        name: 'Rezynow Restaurant',
+        description: `Payment for ${isDineIn ? 'Table Reservation' : 'Food Order'}`,
+        order_id: orderData.orderId,
+        handler: async function (response: any) {
+          // Verify payment on backend
+          try {
+            const verifyResponse = await fetch(`${API_URL}/api/verify-payment`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+              }),
+            });
+
+            const verifyData = await verifyResponse.json();
+
+            if (verifyData.success) {
+              // Save booking data
+              const newBookingId = generateBookingId();
+              setBookingId(newBookingId);
+              
+              // Save booking to localStorage (you can also save to Supabase here)
+              const existingBookings = JSON.parse(localStorage.getItem('bookings') || '[]');
+              const newBooking = {
+                ...bookingData,
+                id: newBookingId,
+                paymentMethod: 'razorpay',
+                razorpayOrderId: response.razorpay_order_id,
+                razorpayPaymentId: response.razorpay_payment_id,
+                status: 'confirmed',
+                createdAt: new Date().toISOString(),
+              };
+              localStorage.setItem('bookings', JSON.stringify([...existingBookings, newBooking]));
+
+              // Navigate to success page
+              navigate('/payment-success', {
+                state: {
+                  bookingId: newBookingId,
+                  paymentId: response.razorpay_payment_id,
+                  orderId: response.razorpay_order_id,
+                  bookingData,
+                },
+              });
+            } else {
+              toast.error('Payment verification failed');
+              setIsProcessing(false);
+            }
+          } catch (error) {
+            console.error('Payment verification error:', error);
+            toast.error('Payment verification failed');
+            setIsProcessing(false);
+          }
+        },
+        prefill: {
+          name: bookingData.name,
+          email: bookingData.email,
+          contact: bookingData.phone,
+        },
+        theme: {
+          color: '#6366f1',
+        },
+        modal: {
+          ondismiss: function () {
+            setIsProcessing(false);
+            toast.info('Payment cancelled');
+          },
+        },
       };
-      localStorage.setItem('bookings', JSON.stringify([...existingBookings, newBooking]));
-    }, 2000);
+
+      const razorpay = new window.Razorpay(options);
+      razorpay.open();
+    } catch (error) {
+      console.error('Payment error:', error);
+      toast.error('Failed to initiate payment. Please try again.');
+      setIsProcessing(false);
+    }
   };
 
   const handleSuccessClose = () => {
@@ -115,130 +214,39 @@ const Payment = () => {
               <div className="lg:col-span-2">
                 <Card>
                   <CardHeader>
-                    <CardTitle>Payment Method</CardTitle>
+                    <CardTitle>Secure Payment</CardTitle>
                     <CardDescription>
-                      Choose your preferred payment method
+                      Complete your payment using Razorpay secure gateway
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
-                    <form onSubmit={handlePayment} className="space-y-6">
-                      <RadioGroup value={paymentMethod} onValueChange={setPaymentMethod}>
-                        <div className="flex items-center space-x-2 border rounded-lg p-4 cursor-pointer hover:bg-muted/50">
-                          <RadioGroupItem value="card" id="card" />
-                          <Label htmlFor="card" className="flex-1 cursor-pointer flex items-center gap-2">
-                            <CreditCard className="h-5 w-5" />
-                            Credit/Debit Card
-                          </Label>
-                        </div>
-                        <div className="flex items-center space-x-2 border rounded-lg p-4 cursor-pointer hover:bg-muted/50">
-                          <RadioGroupItem value="upi" id="upi" />
-                          <Label htmlFor="upi" className="flex-1 cursor-pointer flex items-center gap-2">
-                            <Wallet className="h-5 w-5" />
-                            UPI
-                          </Label>
-                        </div>
-                        <div className="flex items-center space-x-2 border rounded-lg p-4 cursor-pointer hover:bg-muted/50">
-                          <RadioGroupItem value="netbanking" id="netbanking" />
-                          <Label htmlFor="netbanking" className="flex-1 cursor-pointer flex items-center gap-2">
-                            <Building2 className="h-5 w-5" />
-                            Net Banking
-                          </Label>
-                        </div>
-                      </RadioGroup>
-
-                      {/* Card Payment Form */}
-                      {paymentMethod === 'card' && (
-                        <div className="space-y-4 pt-4">
-                          <div className="space-y-2">
-                            <Label htmlFor="cardNumber">Card Number</Label>
-                            <Input
-                              id="cardNumber"
-                              placeholder="1234 5678 9012 3456"
-                              value={cardNumber}
-                              onChange={(e) => {
-                                const value = e.target.value.replace(/\s/g, '');
-                                const formattedValue = value.replace(/(\d{4})/g, '$1 ').trim();
-                                setCardNumber(formattedValue.slice(0, 19));
-                              }}
-                              maxLength={19}
-                              required
-                            />
-                          </div>
-                          <div className="space-y-2">
-                            <Label htmlFor="cardName">Cardholder Name</Label>
-                            <Input
-                              id="cardName"
-                              placeholder="JOHN DOE"
-                              value={cardName}
-                              onChange={(e) => setCardName(e.target.value.toUpperCase())}
-                              required
-                            />
-                          </div>
-                          <div className="grid grid-cols-2 gap-4">
-                            <div className="space-y-2">
-                              <Label htmlFor="expiry">Expiry Date</Label>
-                              <Input
-                                id="expiry"
-                                placeholder="MM/YY"
-                                value={expiryDate}
-                                onChange={(e) => {
-                                  const value = e.target.value.replace(/\D/g, '');
-                                  const formattedValue = value.slice(0, 2) + (value.length > 2 ? '/' + value.slice(2, 4) : '');
-                                  setExpiryDate(formattedValue);
-                                }}
-                                maxLength={5}
-                                required
-                              />
-                            </div>
-                            <div className="space-y-2">
-                              <Label htmlFor="cvv">CVV</Label>
-                              <Input
-                                id="cvv"
-                                type="password"
-                                placeholder="123"
-                                value={cvv}
-                                onChange={(e) => setCvv(e.target.value.replace(/\D/g, '').slice(0, 3))}
-                                maxLength={3}
-                                required
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* UPI Payment Form */}
-                      {paymentMethod === 'upi' && (
-                        <div className="space-y-4 pt-4">
-                          <div className="space-y-2">
-                            <Label htmlFor="upiId">UPI ID</Label>
-                            <Input
-                              id="upiId"
-                              placeholder="yourname@upi"
-                              value={upiId}
-                              onChange={(e) => setUpiId(e.target.value)}
-                              required
-                            />
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Net Banking */}
-                      {paymentMethod === 'netbanking' && (
-                        <div className="space-y-4 pt-4">
+                    <div className="space-y-6">
+                      <div className="flex items-center gap-3 p-4 border rounded-lg bg-muted/30">
+                        <CreditCard className="h-6 w-6 text-primary" />
+                        <div>
+                          <p className="font-medium">Razorpay Payment Gateway</p>
                           <p className="text-sm text-muted-foreground">
-                            You will be redirected to your bank's website to complete the payment.
+                            Secure payment with multiple options: Cards, UPI, Net Banking, Wallets
                           </p>
                         </div>
-                      )}
+                      </div>
+
+                      <div className="space-y-2 text-sm text-muted-foreground">
+                        <p>• All major credit/debit cards accepted</p>
+                        <p>• UPI payments (Google Pay, PhonePe, Paytm, etc.)</p>
+                        <p>• Net Banking from all major banks</p>
+                        <p>• Digital Wallets supported</p>
+                      </div>
 
                       <Button 
-                        type="submit" 
+                        onClick={handlePayment}
                         className="w-full bg-gradient-to-r from-primary to-secondary"
-                        disabled={isProcessing}
+                        disabled={isProcessing || !razorpayLoaded}
+                        size="lg"
                       >
-                        {isProcessing ? 'Processing...' : `Pay ₹${total}`}
+                        {isProcessing ? 'Processing...' : !razorpayLoaded ? 'Loading...' : `Pay Now ₹${total}`}
                       </Button>
-                    </form>
+                    </div>
                   </CardContent>
                 </Card>
               </div>
