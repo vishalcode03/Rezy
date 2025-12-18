@@ -86,10 +86,15 @@ const Payment = () => {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to create order');
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Failed to create order. Please check your backend server.');
       }
 
       const orderData = await response.json();
+
+      if (!orderData.success || !orderData.orderId) {
+        throw new Error('Invalid order response from server');
+      }
 
       // Razorpay options
       const razorpayKeyId = import.meta.env.VITE_RAZORPAY_KEY_ID;
@@ -138,20 +143,30 @@ const Payment = () => {
                 razorpayPaymentId: response.razorpay_payment_id,
                 status: 'confirmed',
                 createdAt: new Date().toISOString(),
+                total: isDineIn ? 100 : bookingData.total,
               };
               localStorage.setItem('bookings', JSON.stringify([...existingBookings, newBooking]));
 
-              // Navigate to success page
-              navigate('/payment-success', {
-                state: {
-                  bookingId: newBookingId,
-                  paymentId: response.razorpay_payment_id,
-                  orderId: response.razorpay_order_id,
-                  bookingData,
-                },
-              });
+              // Show success toast
+              toast.success('Payment successful! Redirecting...');
+
+              // Navigate to success page with a small delay for better UX
+              setTimeout(() => {
+                navigate('/payment-success', {
+                  state: {
+                    bookingId: newBookingId,
+                    paymentId: response.razorpay_payment_id,
+                    orderId: response.razorpay_order_id,
+                    bookingData: {
+                      ...bookingData,
+                      total: isDineIn ? 100 : bookingData.total,
+                    },
+                  },
+                  replace: true, // Replace history to prevent back navigation to payment
+                });
+              }, 500);
             } else {
-              toast.error('Payment verification failed');
+              toast.error('Payment verification failed. Please contact support.');
               setIsProcessing(false);
             }
           } catch (error) {
@@ -171,16 +186,22 @@ const Payment = () => {
         modal: {
           ondismiss: function () {
             setIsProcessing(false);
-            toast.info('Payment cancelled');
+            toast.info('Payment cancelled by user');
           },
+        },
+        notes: {
+          booking_type: bookingData.type,
+          booking_date: bookingData.date,
+          booking_time: bookingData.time,
         },
       };
 
       const razorpay = new window.Razorpay(options);
       razorpay.open();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Payment error:', error);
-      toast.error('Failed to initiate payment. Please try again.');
+      const errorMessage = error?.message || 'Failed to initiate payment. Please try again.';
+      toast.error(errorMessage);
       setIsProcessing(false);
     }
   };
