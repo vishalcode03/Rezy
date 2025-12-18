@@ -7,8 +7,8 @@ const About = () => {
   const features = [
     {
       icon: Clock,
-      title: 'Fast Delivery',
-      description: 'Get your food delivered hot and fresh within 30 minutes',
+      title: 'Reduces Waiting Time',
+      description: 'It helps people save their seats at a restaurant in advance and reduces waiting time.',
     },
     {
       icon: Shield,
