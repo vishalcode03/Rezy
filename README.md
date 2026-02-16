@@ -34,7 +34,7 @@ It helps customers book tables in advance, order food seamlessly, and allows res
 **Backend**
 - Node.js
 - Express.js  
-*(or Spring Boot – if Java version is used)*
+
 
 **Database**
 - MongoDB / MySQL
